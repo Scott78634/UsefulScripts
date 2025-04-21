@@ -20,21 +20,13 @@ diatheke_key="$book $reference"
 diatheke_output=$(diatheke -b "$translation" -k "$diatheke_key")
 
 # Extract the book title and reference for the first line
-book_title=$(echo "$diatheke_output" | head -n 1 | awk '{print $1, $2}')
+book_title=$(echo "$diatheke_output" | head -n 1 | awk '{print $1, $2, $3, $4}'|sed 's/^\(.*\?\)\s\+[[:digit:]]\+:\(.*\)/\1/')
+#echo ">>> This is the Book Title <<<"
+#echo $book_title
+#echo ">>> <<<"
 first_line="$book_title $reference"
 echo "$first_line"
+echo
 
 # Process the remaining lines to extract verse numbers and text
-echo "$diatheke_output" | awk '
-NR > 1 && !/\(NET\)/ {
-    match($0, /^[^ ]+ [^ ]+ ([0-9]+): (.*)/, parts);
-    if (parts[1] != "") {
-        print parts[1] " " parts[2];
-    }
-}
-END {
-    if ($0 ~ /\(NET\)/) {
-        print $0
-    }
-}
-' | sed 's/<[^>]*>//g'
+echo "$diatheke_output" |sed 's/^[^:]*://' |sed 's/<[^>]*>//g' |sed 's/://'
