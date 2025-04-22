@@ -1,15 +1,16 @@
 #!/bin/bash
-# getbible.sh
-# Scott Purcell, April 21, 2025
+# gedit_getbible.sh
+# Scott Purcell, April 22, 2025
 
 # Default translation if not specified
 default_translation="NET"
 
 # Check if an argument (the scripture reference) is provided
 if [ -z "$1" ]; then
-    echo "Usage: $0 <translation> <book> <chapter:verse_start-verse_end>"
+    echo "Usage: $0 <book> <chapter:verse_start-verse_end> <translation>"
+    echo "   or: $0 <translation> <book> <chapter:verse_start-verse_end>"
     echo "   or: $0 <book> <chapter:verse_start-verse_end> (using default translation: $default_translation)"
-    echo "Example: Select 'NET 1PE 1:6-7' or '1PE 1:6-7' in Gedit and run this tool."
+    echo "Examples: Select 'Ro 6:23 LEB', 'LEB Ro 6:23', or 'Ro 6:23' in Gedit."
     exit 1
 fi
 
@@ -18,11 +19,16 @@ parts=($1)
 translation=""
 book_reference=""
 
-# Check if the first part looks like a common Bible translation (all caps or short abbreviations)
-if [[ "${parts[0]}" =~ ^[A-Z]{2,}$ ]] || [[ "${parts[0]}" =~ ^[A-Z]{3}\$ ]]; then
+# Check if the last part looks like a common Bible translation
+if [[ "${parts[-1]}" =~ ^[A-Z]{2,}$ ]] || [[ "${parts[-1]}" =~ ^[A-Z]{3}\$ ]]; then
+    translation="${parts[-1]}"
+    # Rebuild the book and reference from the remaining parts
+    unset parts[-1] # Remove the last element (the translation)
+    book_reference=$(IFS=' '; echo "${parts[*]}")
+elif [[ "${parts[0]}" =~ ^[A-Z]{2,}$ ]] || [[ "${parts[0]}" =~ ^[A-Z]{3}\$ ]]; then
     translation="${parts[0]}"
     # Rebuild the book and reference from the remaining parts
-    shift parts
+    unset parts[0]
     book_reference=$(IFS=' '; echo "${parts[*]}")
 else
     translation="$default_translation"
@@ -46,4 +52,3 @@ echo
 
 # Process the remaining lines to extract verse numbers and text
 echo "$diatheke_output" |sed 's/^[^:]*://' |sed 's/<[^>]*>//g' |sed 's/://'
-
