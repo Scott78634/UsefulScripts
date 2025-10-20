@@ -75,28 +75,55 @@ echo "$first_line"
 echo
 
 # ----------------------------------------------------------------------
-# --- Final Output Processing (FINAL WORKING FIX) ---
+# --- Final Output Processing (FIXING REPETITIVE TITLE) ---
 # ----------------------------------------------------------------------
 
+# Define the common unwanted text found at the end of Psalms verses
+# This is usually the stripped psalm title/heading.
+# We make it generic to try and catch all multi-word trailing artifacts.
+UNWANTED_TRAIL='Of David\. A psalm\.|A psalm\. Of David\.'
+TRANSLATION_TAG_REGEX='^\(([A-Z]+)\)$'
+
 echo "$diatheke_output" |
-# 1. Remove all XML tags (e.g., <milestone>, <transChange>, <divineName>).
+# 1. Remove all XML tags first. This exposes the clean verse references.
 sed 's/<[^>]*>//g' |
-# 2. Skip the lines that are *not* verse text (i.e., lines that don't contain a verse reference).
-# This prevents error messages from the next step trying to parse non-verse lines.
+# 2. Join lines back together, then insert a newline before every Book/Chapter/Verse marker.
+# This ensures each verse starts a new line.
+tr '\n' ' ' |
+sed -E 's/([A-Z]{1,3}[a-z]*[[:space:]]+[[:digit:]]+:[[:digit:]]+:)/\n\1/g' |
+# 3. Clean up leading/trailing whitespace and remove empty lines.
+sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' |
+grep -v '^[[:space:]]*$' |
+# 4. Filter for only the lines that start with a verse reference.
 grep -E '^[A-Z][^:]*:[0-9]+:' |
-# 3. CRUCIAL FIX: Extract ONLY the verse number and text.
+# 5. Remove the unwanted trailing title text (e.g., "Of David. A psalm.").
+# This uses the UNWANTED_TRAIL regex defined above.
+sed -E "s/[[:space:]]*$UNWANTED_TRAIL[[:space:]]*$//" |
+# 6. CRUCIAL FIX: Extract ONLY the verse number and text.
 # Pattern: [Book Name] [Chapter]:[Verse]: [Text] -> [Verse] [Text]
 # \1 captures the verse number, \2 captures the text.
-# The structure [^[:digit:]]* ensures any combination of book names is stripped.
 sed -E 's/^[[:space:]]*[^[:digit:]]*[[:digit:]]+:([[:digit:]]+):[[:space:]]*(.*)/\1 \2/' |
-# 4. Remove any remaining colons and the initial blank lines/headers.
+# 7. Remove any remaining colons.
 sed 's/://g' |
-# 5. Add the version tag back at the end and remove any blank lines.
+# 8. Add the version tag back at the end and remove any blank lines.
+# We do this one time and rely on the later steps to ensure uniqueness.
 cat - <(echo "$translation") |
 grep -v '^[[:space:]]*$' |
-# 6. Remove any leading/trailing whitespace
+# 9. Remove any leading/trailing whitespace
 sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' |
-# 7. Use awk to only print unique lines (since the version tag may be repeated)
+# 10. Use awk to only print unique lines (This prevents duplicate verse lines)
 awk '!x[$0]++' |
-# 8. Ensure the version tag is wrapped in parentheses
-sed -E 's/^([A-Z]+)$/(\1)/'
+# 11. Ensure the translation tag is wrapped in parentheses and is printed only once.
+# This specifically targets the translation tag and removes duplicates if present.
+awk -v tag="$translation" '
+    { lines[i++] = $0 }
+    END {
+        for (j = 0; j < i; j++) {
+            if (lines[j] != tag && lines[j] != "(" tag ")") {
+                print lines[j]
+            }
+        }
+        print "(" tag ")"
+    }
+'
+
