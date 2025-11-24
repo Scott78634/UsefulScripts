@@ -1,129 +1,136 @@
 #!/bin/bash
 # kate_getbible.sh
-# Scott Purcell, October 2025 (Final, Error-Free, Robust Version)
+# Updated for robustness with full book names, whole chapters, and interactive prompting.
 
 # ----------------------------------------------------------------------
-# --- Argument and Diatheke Call Blocks (Remaining Correct) ---
+# --- 1. Argument Collection and Parsing ---
 # ----------------------------------------------------------------------
 
-# Check if the correct number of arguments is provided.
-if [ "$#" -ne 3 ] && [ "$#" -ne 1 ]; then
-    echo "Usage (command line): $0 <translation> <book> <chapter:verse_start-verse_end>" >&2
-    echo "Usage (Kate/CLI): Select text like 'Book Chapter:Verse Translation'" >&2
+# Combine all arguments into one string to handle various quoting styles
+FULL_INPUT="$*"
+
+# If no input provided, we can't do anything (unless we want to prompt for EVERYTHING,
+# but usually in Kate you select text first).
+if [ -z "$FULL_INPUT" ]; then
+    echo "Error: No text selected or arguments provided." >&2
     exit 1
 fi
 
-# --- Argument Parsing ---
-if [ "$#" -eq 3 ]; then
-    book="$1"
-    reference="$2"
-    translation="$3"
-elif [ "$#" -eq 1 ]; then
-    full_reference="$1"
-    translation=$(echo "$full_reference" | awk '{print $NF}')
-    book_and_reference=$(echo "$full_reference" | awk '{$NF=""; print $0}' | xargs)
-    last_space_pos=$(echo "$book_and_reference" | grep -o -b ' ' | tail -1 | awk -F: '{print $1}')
-    if [ -n "$last_space_pos" ]; then
-        book=${book_and_reference:0:last_space_pos}
-        reference=${book_and_reference:last_space_pos+1}
+# Function to prompt for translation
+get_translation_interactive() {
+    # Default translation preference
+    DEFAULT_TRANS="LEB"
+
+    if command -v kdialog >/dev/null 2>&1; then
+        # KDE Native Dialog
+        kdialog --title "Bible Translation" --inputbox "Enter Translation (e.g., KJV, ESV, LEB):" "$DEFAULT_TRANS"
+    elif command -v zenity >/dev/null 2>&1; then
+        # GTK/Gnome Fallback
+        zenity --entry --title "Bible Translation" --text "Enter Translation:" --entry-text "$DEFAULT_TRANS"
     else
-        echo "Error: Could not parse book and reference from '$book_and_reference'." >&2
-        exit 1
+        # Terminal Fallback
+        read -p "Enter Translation (e.g., LEB): " input_trans
+        echo "$input_trans"
     fi
-    book=$(echo "$book" | xargs)
-    reference=$(echo "$reference" | xargs)
-    if [ -z "$translation" ] || [ -z "$book" ] || [ -z "$reference" ]; then
-        echo "Error: Failed to parse translation, book, or reference from '$full_reference'." >&2
-        exit 1
-    fi
+}
+
+# --- Logic to determine Book/Reference vs Translation ---
+
+# Get the last word of the input string
+LAST_WORD=$(echo "$FULL_INPUT" | awk '{print $NF}')
+
+# Regex to check if the last word looks like a translation code.
+# Criteria: 3-5 uppercase letters, or specific common ones like "NKJV".
+# If the last word is numeric (e.g. "Genesis 1"), it's NOT a translation.
+if [[ "$LAST_WORD" =~ ^[A-Z]{3,5}$ ]]; then
+    TRANSLATION="$LAST_WORD"
+    # Remove the translation from the query string
+    QUERY=$(echo "$FULL_INPUT" | sed "s/[[:space:]]*$TRANSLATION$//")
+else
+    # The input likely doesn't have a translation (e.g. "Genesis 1")
+    QUERY="$FULL_INPUT"
+    TRANSLATION=$(get_translation_interactive)
 fi
 
-# --- Diatheke Call and Error Check ---
-diatheke_key="$book $reference"
-# CRUCIAL: Diatheke output is captured directly without modification here.
-diatheke_output=$(diatheke -b "$translation" -k "$diatheke_key" 2>&1)
-
-if echo "$diatheke_output" | grep -qE "Usage|invalid module|not found"; then
-    echo "Error: Diatheke failed. Check translation ('$translation') or reference ('$diatheke_key')." >&2
-    echo "Diatheke output (showing error/help):" >&2
-    echo "$diatheke_output" >&2
+if [ -z "$TRANSLATION" ]; then
+    echo "Error: No translation provided." >&2
     exit 1
 fi
 
 # ----------------------------------------------------------------------
-# --- Canonical Book Name Extraction and Custom Header ---
+# --- 2. Diatheke Call ---
 # ----------------------------------------------------------------------
 
-# Extract the canonical Book Name reliably from the raw output.
-canonical_book_name=$(
-    # Look for the pattern: [Book Name] [Chapter]:[Verse]: on a single line
-    echo "$diatheke_output" |
-    grep -v '^\s*$' |
-    head -n 1 |
-    grep -oE '^[[:space:]]*[^[:digit:]]*[[:digit:]]+:[[:digit:]]+:' |
-    sed -E 's/[[:space:]]*[[:digit:]]+:.*//' |
-    xargs
-)
+# We pass the whole QUERY to diatheke. Diatheke is smart enough to parse
+# "Genesis 1", "Gen 1:1", or "1 John 1" without us splitting it manually.
+DIATHEKE_OUTPUT=$(diatheke -b "$TRANSLATION" -k "$QUERY" 2>&1)
 
-if [ -z "$canonical_book_name" ]; then
-    canonical_book_name="$book"
+# Error Checking
+if echo "$DIATHEKE_OUTPUT" | grep -qE "Usage|invalid module|not found"; then
+    echo "Error: Diatheke failed. Check translation ('$TRANSLATION') or reference ('$QUERY')." >&2
+    exit 1
 fi
 
-# Construct and print the custom header.
-first_line="$canonical_book_name $reference ($translation)"
-echo "$first_line"
+# ----------------------------------------------------------------------
+# --- 3. Header Extraction ---
+# ----------------------------------------------------------------------
+
+# Extract a display header. We try to grab the first verse reference returned.
+# We relaxed the regex to allow numbered books (1 John) and full names.
+CANONICAL_REF=$(echo "$DIATHEKE_OUTPUT" | \
+    grep -oE '^[[:space:]]*([1-3]?[[:space:]]?[A-Za-z]+)[[:space:]]+[0-9]+:[0-9]+:' | \
+    head -n 1 | \
+    sed 's/:$//' | xargs)
+
+if [ -z "$CANONICAL_REF" ]; then
+    # Fallback if regex fails (e.g. sometimes diatheke output format varies)
+    CANONICAL_REF="$QUERY"
+fi
+
+echo "$CANONICAL_REF ($TRANSLATION)"
 echo
 
 # ----------------------------------------------------------------------
-# --- Final Output Processing (FIXING REPETITIVE TITLE) ---
+# --- 4. Content Processing ---
 # ----------------------------------------------------------------------
 
-# Define the common unwanted text found at the end of Psalms verses
-# This is usually the stripped psalm title/heading.
-# We make it generic to try and catch all multi-word trailing artifacts.
 UNWANTED_TRAIL='Of David\. A psalm\.|A psalm\. Of David\.'
-TRANSLATION_TAG_REGEX='^\(([A-Z]+)\)$'
 
-echo "$diatheke_output" |
-# 1. Remove all XML tags first. This exposes the clean verse references.
+echo "$DIATHEKE_OUTPUT" |
+# 1. Strip XML
 sed 's/<[^>]*>//g' |
-# 2. Join lines back together, then insert a newline before every Book/Chapter/Verse marker.
-# This ensures each verse starts a new line.
+# 2. Normalize newlines for processing
 tr '\n' ' ' |
-sed -E 's/([A-Z]{1,3}[a-z]*[[:space:]]+[[:digit:]]+:[[:digit:]]+:)/\n\1/g' |
-# 3. Clean up leading/trailing whitespace and remove empty lines.
+# 3. Insert newline before Verse Markers.
+# UPDATED REGEX: Handles "Gen", "Genesis", "1 John", "Song of Solomon"
+# Logic: Optional number -> Space -> Word(s) -> Space -> Number:Number:
+sed -E 's/(([1-3][[:space:]])?[A-Za-z ]+[[:space:]]+[0-9]+:[0-9]+:)/\n\1/g' |
+# 4. Clean whitespace
 sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' |
 grep -v '^[[:space:]]*$' |
-# 4. Filter for only the lines that start with a verse reference.
-grep -E '^[A-Z][^:]*:[0-9]+:' |
-# 5. Remove the unwanted trailing title text (e.g., "Of David. A psalm.").
-# This uses the UNWANTED_TRAIL regex defined above.
+# 5. Filter for lines that actually look like verses
+# UPDATED REGEX: Matches "Genesis 1:1:" or "1 John 1:1:"
+grep -E '^([1-3][[:space:]])?[A-Za-z].*:[0-9]+:' |
+# 6. Remove unwanted Psalm titles
 sed -E "s/[[:space:]]*$UNWANTED_TRAIL[[:space:]]*$//" |
-# 6. CRUCIAL FIX: Extract ONLY the verse number and text.
-# Pattern: [Book Name] [Chapter]:[Verse]: [Text] -> [Verse] [Text]
-# \1 captures the verse number, \2 captures the text.
-sed -E 's/^[[:space:]]*[^[:digit:]]*[[:digit:]]+:([[:digit:]]+):[[:space:]]*(.*)/\1 \2/' |
-# 7. Remove any remaining colons.
+# 7. Extract Verse Number and Text.
+# \1 = Verse Number, \2 = Text
+sed -E 's/^.*:([0-9]+):[[:space:]]*(.*)/\1 \2/' |
+# 8. Remove internal colons if any remain
 sed 's/://g' |
-# 8. Add the version tag back at the end and remove any blank lines.
-# We do this one time and rely on the later steps to ensure uniqueness.
-cat - <(echo "$translation") |
-grep -v '^[[:space:]]*$' |
-# 9. Remove any leading/trailing whitespace
+# 9. Append Translation tag to end (deduplication handled via logic)
+cat - <(echo "($TRANSLATION)") |
+# 10. Clean up
 sed -E 's/^[[:space:]]*//;s/[[:space:]]*$//' |
-# 10. Use awk to only print unique lines (This prevents duplicate verse lines)
-awk '!x[$0]++' |
-# 11. Ensure the translation tag is wrapped in parentheses and is printed only once.
-# This specifically targets the translation tag and removes duplicates if present.
-awk -v tag="$translation" '
-    { lines[i++] = $0 }
-    END {
-        for (j = 0; j < i; j++) {
-            if (lines[j] != tag && lines[j] != "(" tag ")") {
-                print lines[j]
-            }
+# 11. Final output formatting
+awk -v tag="$TRANSLATION" '
+    !seen[$0]++ {
+        # Store lines to print them cleanly
+        if ($0 != "(" tag ")" && $0 != tag) {
+            print $0
         }
+    }
+    END {
         print "(" tag ")"
     }
 '
-
