@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CPU Temperature Alert
+Comment=Warns when CPU temperature climbs (fans sometimes fail to spin up)
+Exec=sh -c "$HOME/bin/temp-alert.sh"
+Terminal=false
+Categories=System;Monitor;
+X-GNOME-Autostart-enabled=true
